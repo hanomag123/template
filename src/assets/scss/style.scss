@@ -42,7 +42,9 @@ img {
 }
 
 svg {
-  transition: all 0.1s linear;
+  transition: fill, opacity, transform, stroke;
+  transition-duration: .3s;
+  overflow: visible;
 }
 
 .hide {
