@@ -24,6 +24,22 @@ const footer = require('gulp-footer');
 const svgSprite = require('gulp-svg-sprite')
 const replace = require('gulp-string-replace');
 
+const Vinyl = require('vinyl')
+
+function string_src(filename, string) {
+  var src = require('stream').Readable({ objectMode: true })
+  src._read = function () {
+    this.push(new Vinyl({
+      cwd: "",
+      base: "/src",
+      path: filename,
+      contents: Buffer.from(string, 'utf-8')
+    }))
+    this.push(null)
+  }
+  return src
+}
+
 /* Paths */
 const srcPath = "src/";
 const distPath = "dist/";
@@ -302,7 +318,7 @@ function newFile() {
     const arr = argv.page.split(' ');
 
     arr.forEach(element => {
-      return src('src/assets/empty.html')
+      return string_src("hello", '')
         .pipe(rename(() => {
           return {
             dirname: '.',
@@ -430,6 +446,7 @@ const buildNMin = gulp.series(clean, html, css, js, images, fonts, sprites);
 
 /* Exports Tasks */
 
+exports["make:page"] = make;
 exports.make = make;
 exports.html = html;
 exports.php = php;
