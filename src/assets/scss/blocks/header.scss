@@ -1,0 +1,16 @@
+.header {
+  position: fixed;
+  width: 100%;
+  transition: transform .3s;
+  will-change: transform;
+  top: 0;
+  left: 0;
+  z-index: 20;
+
+  @include breakpoint($xl-bp) {
+  }
+}
+
+.out {
+  transform: translate3d(0, calc(-100% - 1rem), 0);
+}

@@ -1,0 +1,12 @@
+@mixin breakpoint($bp) {
+  @media (max-width: $bp) {
+    @content;
+  }
+}
+
+
+@mixin round($wh, $round:100%) {
+  width: $wh;
+  height: $wh;
+  border-radius: $round;
+}
