@@ -47,12 +47,12 @@ const path = {
   build: {
     html: distPath,
     php: distPath,
-    js: distPath + "assets/js/",
-    css: distPath + "assets/css/",
-    images: distPath + "assets/images/",
-    fonts: distPath + "assets/fonts/",
-    vendorcss: distPath + "assets/css/vendor/",
-    sprites: distPath + "assets/images/"
+    js: distPath + "js/",
+    css: distPath + "css/",
+    images: distPath + "images/",
+    fonts: distPath + "fonts/",
+    vendorcss: distPath + "css/vendor/",
+    sprites: distPath + "images/"
   },
   src: {
     html: srcPath + "*.html",
