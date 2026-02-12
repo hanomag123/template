@@ -15,30 +15,18 @@ const imagemin = require("gulp-imagemin");
 const del = require("del");
 const browserSync = require("browser-sync").create();
 const purgecss = require("gulp-purgecss");
-// const tailwindcss = require("tailwindcss");
-const postcss = require('gulp-postcss');
 const fileInclude = require('gulp-file-include');
 const pug = require('gulp-pug');
 const argv = require('yargs').argv;
 const footer = require('gulp-footer');
-const svgSprite = require('gulp-svg-sprite')
-const replace = require('gulp-string-replace');
+const postcss = require('gulp-postcss');
+const postcssDiscardComments = require('postcss-discard-comments');
 
-const Vinyl = require('vinyl')
-
-function string_src(filename, string) {
-  var src = require('stream').Readable({ objectMode: true })
-  src._read = function () {
-    this.push(new Vinyl({
-      cwd: "",
-      base: "/src",
-      path: filename,
-      contents: Buffer.from(string, 'utf-8')
-    }))
-    this.push(null)
-  }
-  return src
-}
+// CSS splitting libraries
+const groupCssMediaQueries = require('gulp-group-css-media-queries');
+const through2 = require('through2');
+const cssParser = require('css');
+const pathModule = require('path');
 
 /* Paths */
 const srcPath = "src/";
@@ -46,37 +34,108 @@ const distPath = "dist/";
 const path = {
   build: {
     html: distPath,
-    php: distPath,
     js: distPath + "js/",
     css: distPath + "css/",
     images: distPath + "images/",
     fonts: distPath + "fonts/",
     vendorcss: distPath + "css/vendor/",
-    sprites: distPath + "images/"
+    video: distPath + "video/",
   },
   src: {
     html: srcPath + "*.html",
-    php: srcPath + "*.php",
     js: srcPath + "assets/js/*.js",
     css: srcPath + "assets/scss/*.scss",
     vendorcss: srcPath + "assets/js/components/*.css",
     pug: srcPath + "*.pug",
-    images: srcPath + "assets/images/**/*.{jpg,png,svg,gif,ico,webp,webmanifest,xml,json}",
+    video: distPath + "assets/video/",
+    images:
+      srcPath +
+      "assets/images/**/*.{jpg,png,svg,gif,ico,webp,webmanifest,xml,json}",
     fonts: srcPath + "assets/fonts/**/*.{eot,woff,woff2,ttf,svg}",
-    sprites: srcPath + 'assets/sprite/*.svg',
   },
   watch: {
     html: srcPath + "**/*.html",
-    php: srcPath + "**/*.php",
     js: srcPath + "assets/js/**/*.js",
     css: srcPath + "assets/scss/**/*.scss",
     vendorcss: srcPath + "assets/js/components/*.css",
     pug: srcPath + "*.pug",
-    images: srcPath + "assets/images/**/*.{jpg,png,svg,gif,ico,webp,webmanifest,xml,json}",
+    images:
+      srcPath +
+      "assets/images/**/*.{jpg,png,svg,gif,ico,webp,webmanifest,xml,json}",
     fonts: srcPath + "assets/fonts/**/*.{eot,woff,woff2,ttf,svg}",
   },
   clean: "./" + distPath,
 };
+
+// Custom plugin to split CSS - creates adaptive.css ONLY for style.scss
+function splitCssDirect() {
+  return through2.obj(function(file, enc, cb) {
+    if (file.isNull()) {
+      return cb(null, file);
+    }
+    
+    if (file.isStream()) {
+      return cb(new Error('Streaming not supported'));
+    }
+    
+    try {
+      const contents = file.contents.toString();
+      const ast = cssParser.parse(contents);
+      const fileName = pathModule.basename(file.path, '.css');
+      const isMainStyle = fileName === 'style' || file.path.includes('style.css');
+      
+      let baseRules = [];
+      let mediaRules = [];
+      
+      ast.stylesheet.rules.forEach(rule => {
+        if (rule.type === 'media') {
+          mediaRules.push(rule);
+        } else {
+          baseRules.push(rule);
+        }
+      });
+      
+      if (isMainStyle) {
+        // For main style.scss file - create style.css and adaptive.css
+        if (baseRules.length > 0) {
+          const baseFile = file.clone();
+          baseFile.path = file.path.replace(/[^/\\]*$/, 'style.css');
+          baseFile.contents = Buffer.from(cssParser.stringify({
+            type: 'stylesheet',
+            stylesheet: { rules: baseRules }
+          }));
+          this.push(baseFile);
+        }
+        
+        // Create adaptive.css (only media queries) - ONLY for style.scss
+        if (mediaRules.length > 0) {
+          const mediaFile = file.clone();
+          mediaFile.path = file.path.replace(/[^/\\]*$/, 'adaptive.css');
+          mediaFile.contents = Buffer.from(cssParser.stringify({
+            type: 'stylesheet',
+            stylesheet: { rules: mediaRules }
+          }));
+          this.push(mediaFile);
+        }
+      } else {
+        // For other SCSS files (like hello.scss) - create only {filename}.css with ALL styles
+        // This includes both base and media queries in one file
+        const outputFile = file.clone();
+        outputFile.path = file.path.replace(/[^/\\]*$/, fileName + '.css');
+        outputFile.contents = Buffer.from(cssParser.stringify({
+          type: 'stylesheet',
+          stylesheet: { rules: [...baseRules, ...mediaRules] }
+        }));
+        this.push(outputFile);
+      }
+      
+      cb();
+      
+    } catch (err) {
+      cb(err);
+    }
+  });
+}
 
 /* Tasks */
 
@@ -86,21 +145,6 @@ function serve() {
       baseDir: "./" + distPath,
     },
   });
-}
-
-function sprites() {
-  return src(path.src.sprites)
-    .pipe(svgSprite({
-      mode: {
-        stack: {
-          sprite: "../sprite.svg"
-        }
-      },
-    }
-    ))
-    .pipe(replace(new RegExp('stroke=".*?"|fill=".*?"|opacity=".*?"', 'g'), ''))
-    .pipe(dest(path.build.sprites))
-    .pipe(browserSync.stream())
 }
 
 function html(cb) {
@@ -122,64 +166,46 @@ function html(cb) {
     }))
     .pipe(dest(path.build.html))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
-}
-
-function php(cb) {
-  return src(path.src.php, { base: srcPath })
-    .pipe(dest(path.build.php))
-    .pipe(browserSync.reload({ stream: true }));
 }
 
 function pugs(cb) {
   return src(path.src.pug, { base: srcPath })
     .pipe(pug())
     .pipe(dest(path.build.html))
-    .pipe(browserSync.reload({ stream: true }))
-
-  cb()
+    .pipe(browserSync.reload({ stream: true }));
 }
 
-function css(cb) {
+// Main CSS build task - processes all SCSS files
+function buildCss(cb) {
   return src(path.src.css, { base: srcPath + "assets/scss/" })
     .pipe(
       sass({
         includePaths: "./node_modules/",
-      })
+      }).on('error', sass.logError)
     )
-    // .pipe(postcss([tailwindcss("./tailwind.config.js")]))
     .pipe(
       autoprefixer({
         cascade: true,
       })
     )
     .pipe(cssbeautify())
-    // .pipe(
-    //   cssnano({
-    //     zindex: false,
-    //     discardComments: {
-    //       removeAll: true,
-    //     },
-    //   })
-    // )
     .pipe(removeComments())
-    // .pipe(dest(path.build.css))
-    // .pipe(
-    //   rename({
-    //     suffix: ".min",
-    //     extname: ".css",
-    //   })
-    // )
+    // Group media queries together
+    .pipe(groupCssMediaQueries())
+    // Split directly into appropriate files based on filename
+    .pipe(splitCssDirect())
     .pipe(dest(path.build.css))
     .pipe(browserSync.reload({ stream: true }));
+}
 
-  cb();
+// Watch task for CSS - reuses buildCss
+function cssWatch(cb) {
+  return buildCss(cb);
 }
 
 function vendorcss(cb) {
   return src(path.src.vendorcss, { base: srcPath + "assets/js/components/" })
-    .pipe(dest(path.build.vendorcss))
+    .pipe(dest(path.build.vendorcss));
 }
 
 function cleanCss(cb) {
@@ -187,9 +213,8 @@ function cleanCss(cb) {
     .pipe(
       sass({
         includePaths: "./node_modules/",
-      })
+      }).on('error', sass.logError)
     )
-    // .pipe(postcss([tailwindcss("./tailwind.config.js")]))
     .pipe(
       purgecss({
         content: ["src/**/*.{html,js,php}"],
@@ -202,13 +227,7 @@ function cleanCss(cb) {
         },
       })
     )
-    // .pipe(
-    //   autoprefixer({
-    //     cascade: true,
-    //   })
-    // )
     .pipe(cssbeautify())
-    .pipe(dest(path.build.css))
     .pipe(
       cssnano({
         zindex: false,
@@ -218,37 +237,10 @@ function cleanCss(cb) {
       })
     )
     .pipe(removeComments())
+    .pipe(groupCssMediaQueries())
+    .pipe(splitCssDirect())
     .pipe(dest(path.build.css))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
-}
-
-function cssWatch(cb) {
-  return src(path.src.css, { base: srcPath + "assets/scss/" })
-    .pipe(
-      sass({
-        includePaths: "./node_modules/",
-      })
-    )
-    // .pipe(postcss([tailwindcss("./tailwind.config.js")]))
-    // .pipe(cssbeautify())
-    // .pipe(removeComments())
-    // .pipe(
-    //   autoprefixer({
-    //     cascade: true,
-    //   })
-    // )
-    // .pipe(
-    //   rename({
-    //     suffix: ".min",
-    //     extname: ".css",
-    //   })
-    // )
-    .pipe(dest(path.build.css))
-    .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function js(cb) {
@@ -256,8 +248,6 @@ function js(cb) {
     .pipe(rigger())
     .pipe(dest(path.build.js))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function jsWatch(cb) {
@@ -265,8 +255,6 @@ function jsWatch(cb) {
     .pipe(rigger())
     .pipe(dest(path.build.js))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function images(cb) {
@@ -283,100 +271,71 @@ function images(cb) {
     )
     .pipe(dest(path.build.images))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function imagesWatch(cb) {
   return src(path.src.images)
     .pipe(dest(path.build.images))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function fonts(cb) {
   return src(path.src.fonts)
     .pipe(dest(path.build.fonts))
     .pipe(browserSync.reload({ stream: true }));
-
-  cb();
 }
 
 function clean(cb) {
   return del(path.clean);
-
-  cb();
 }
 
 function cleanWithoutImg(cb) {
-  return del([`!dist/**/images/**`, 'dist/**/fonts/**', 'dist/**/css/**', 'dist/**/js/**', 'dist/index.html'])
+  return del([
+    'dist/**/fonts/**',
+    'dist/**/css/**',
+    'dist/**/js/**',
+    'dist/index.html'
+  ], { force: true });
 }
 
 function newFile() {
-  if (argv.page?.length) {
-    const arr = argv.page.split(' ');
-
+  if (argv.file?.length) {
+    const arr = argv.file.split(' ');
     arr.forEach(element => {
-      return string_src("hello", '')
+      src('src/assets/empty.html')
         .pipe(rename(() => {
           return {
             dirname: '.',
             basename: element,
             extname: '.html',
-          }
+          };
         }))
-        .pipe(dest('src'), { overwrite: false, append: true })
+        .pipe(dest('src'), { overwrite: false, append: true });
+      
+      src('src/assets/empty.html')
         .pipe(rename(() => {
           return {
             dirname: '.',
             basename: element,
             extname: '.scss',
-          }
+          };
         }))
-        .pipe(dest('src/assets/scss/blocks'), { overwrite: false, append: true })
+        .pipe(dest('src/assets/scss/blocks'), { overwrite: false, append: true });
     });
-
     return Promise.resolve('значение игнорируется');
-
   } else if (argv.vendor?.length) {
-
     const arr = argv.vendor.split(' ');
     arr.forEach(element => {
-      return src('src/assets/empty.html')
+      src('src/assets/empty.html')
         .pipe(rename(() => {
           return {
             dirname: '.',
             basename: element,
             extname: '.scss',
-          }
+          };
         }))
-        .pipe(dest('src/assets/scss/blocks'), { overwrite: false, append: true })
-    })
-    return Promise.resolve('значение игнорируется');
-  } else if (argv.partial?.length) {
-    const arr = argv.partial.split(' ');
-
-    arr.forEach(element => {
-      return src('src/assets/empty.html')
-        .pipe(rename(() => {
-          return {
-            dirname: '.',
-            basename: element,
-            extname: '.html',
-          }
-        }))
-        .pipe(dest('src/partials'), { overwrite: false, append: true })
-        .pipe(rename(() => {
-          return {
-            dirname: '.',
-            basename: element,
-            extname: '.scss',
-          }
-        }))
-        .pipe(dest('src/assets/scss/blocks'), { overwrite: false, append: true })
+        .pipe(dest('src/assets/scss/vendor'), { overwrite: false, append: true });
     });
-
     return Promise.resolve('значение игнорируется');
   } else {
     return Promise.resolve('значение игнорируется');
@@ -384,50 +343,31 @@ function newFile() {
 }
 
 function toEnd() {
-  if (argv.page?.length) {
-    const arr = argv.page.split(' ');
-
+  if (argv.file?.length) {
+    const arr = argv.file.split(' ');
+    
     gulp.src('src/assets/scss/_importsBlocks.scss')
       .pipe(footer(arr.map(el => ' @import \'./blocks/' + el + '.scss\';').join(' ')))
       .pipe(cssbeautify())
       .pipe(gulp.dest('src/assets/scss/'), { overwrite: true, append: false });
+    
     gulp.src('src/index.html')
       .pipe(footer(arr.map(el => `\n<li><a href="${el}.html" class="_progress__link">${el}</a></li>`).join(' ')))
       .pipe(gulp.dest('src/'), { overwrite: true, append: false });
-
+    
     return Promise.resolve('значение игнорируется');
   } else if (argv.vendor?.length) {
     const arr = argv.vendor.split(' ');
-    gulp.src('src/assets/scss/_importsBlocks.scss')
-      .pipe(footer(arr.map(el => ' @import \'./blocks/' + el + '.scss\';').join(' ')))
+    
+    gulp.src('src/assets/scss/importsVendors.scss')
+      .pipe(footer(arr.map(el => ' @import \'./vendor/' + el + '.scss\';').join(' ')))
       .pipe(cssbeautify())
       .pipe(gulp.dest('src/assets/scss/'), { overwrite: true, append: false });
-    return Promise.resolve('значение игнорируется');
-  } else if (argv.partial?.length) {
-    const arr = argv.partial.split(' ');
-    gulp.src('src/assets/scss/_importsBlocks.scss')
-      .pipe(footer(arr.map(el => ' @import \'./blocks/' + el + '.scss\';').join(' ')))
-      .pipe(cssbeautify())
-      .pipe(gulp.dest('src/assets/scss/'), { overwrite: true, append: false });
+    
     return Promise.resolve('значение игнорируется');
   } else {
     return Promise.resolve('значение игнорируется');
   }
-}
-
-
-function watchFiles() {
-  gulp.watch([path.watch.html], gulp.series(html, cssWatch));
-  // gulp.watch([path.watch.pug], pugs)
-  // gulp.watch([path.watch.css], vendorcss);
-  gulp.watch([path.watch.php], php)
-  gulp.watch([path.watch.css], cssWatch);
-  gulp.watch([path.watch.js], jsWatch);
-  gulp.watch([path.watch.images], imagesWatch);
-  // gulp.watch([path.watch.images], images);
-  gulp.watch([path.watch.fonts], fonts);
-  // gulp.watch(['./tailwind.config.js'], gulp.series(html, cssWatch))
-  gulp.watch([path.src.sprites], sprites);
 }
 
 function imagesWithoutMin() {
@@ -436,21 +376,45 @@ function imagesWithoutMin() {
     .pipe(browserSync.reload({ stream: true }));
 }
 
-const buildOld = gulp.series(clean, gulp.parallel(html, php, css, vendorcss, js, images, fonts));
-const start = gulp.series(cleanWithoutImg, gulp.parallel(html, php, css, js, fonts, sprites));
-const watch = gulp.parallel(start, watchFiles, serve);
+function watchFiles() {
+  gulp.watch([path.watch.html], gulp.series(html));
+  gulp.watch([path.watch.css], cssWatch);
+  gulp.watch([path.watch.js], gulp.series(jsWatch));
+  gulp.watch([path.watch.images], gulp.series(imagesWatch));
+  gulp.watch([path.watch.fonts], gulp.series(fonts));
+}
+
+// Build tasks
+const buildOld = gulp.series(
+  clean,
+  gulp.parallel(html, buildCss, vendorcss, js, images, fonts)
+);
+
+const start = gulp.series(
+  cleanWithoutImg,
+  gulp.parallel(html, buildCss, js, fonts)
+);
+
+const watch = gulp.series(start, gulp.parallel(watchFiles, serve));
 const build = gulp.parallel(buildOld, watchFiles, serve);
-const buildCleanCSS = gulp.series(clean, gulp.parallel(html, cleanCss, js, images, fonts));
-const make = gulp.series(gulp.parallel(newFile, toEnd));
-const buildNMin = gulp.series(clean, html, css, js, images, fonts, sprites);
+const buildCleanCSS = gulp.series(
+  clean,
+  gulp.parallel(html, cleanCss, js, images, fonts)
+);
+const create = gulp.series(gulp.parallel(newFile, toEnd));
+const buildNMin = gulp.series(
+  clean,
+  html,
+  buildCss,
+  js,
+  imagesWithoutMin,
+  fonts
+);
 
 /* Exports Tasks */
-
-exports["make:page"] = make;
-exports.make = make;
+exports.create = create;
 exports.html = html;
-exports.php = php;
-exports.css = css;
+exports.css = buildCss;
 exports.js = js;
 exports.images = images;
 exports.fonts = fonts;
@@ -458,9 +422,7 @@ exports.clean = clean;
 exports.build = build;
 exports.watch = watch;
 exports.default = watch;
-exports.cleanWithoutImg = cleanWithoutImg
-exports.start = start
-exports.buildCleanCSS = buildCleanCSS
-exports.buildNMin = buildNMin
-exports.sprites = sprites;
-
+exports.cleanWithoutImg = cleanWithoutImg;
+exports.start = start;
+exports.buildCleanCSS = buildCleanCSS;
+exports.buildNMin = buildNMin;
